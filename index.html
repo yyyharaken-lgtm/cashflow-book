@@ -187,6 +187,18 @@ input.invalid{background:var(--rose-soft)!important;outline:2px solid var(--rose
 .tag.none{background:var(--field);color:var(--ink-2);font-weight:500}
 .small{margin:0;font-size:12px;color:var(--ink-2)}
 
+/* share link & read-only viewer */
+.viewer-note{background:var(--coral-soft)}
+.readonly .add,.readonly .del,.readonly .owner-only{display:none!important}
+.readonly .entry{grid-template-columns:10px minmax(0,1fr) 120px}
+.readonly .entry .name,.readonly .entry .amt{pointer-events:none}
+.field-l{font-size:12px;color:var(--ink-2);font-weight:700}
+.text{height:42px;border:0;border-radius:12px;background:var(--field);padding:0 14px;font-size:15px;width:min(280px,100%)}
+.text:focus{outline:2px solid var(--green);outline-offset:0}
+.link-text{width:100%;border:0;border-radius:12px;background:var(--field);padding:10px 12px;font-size:12px;line-height:1.5;resize:none;word-break:break-all;color:var(--ink-2)}
+.warn{color:var(--rose)}
+.share > .btn{align-self:flex-start}
+
 /* notes & buttons */
 .note{background:var(--green-soft);border-radius:18px;padding:12px 16px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 14px}
 .note p{margin:0;font-size:13px}
@@ -230,6 +242,11 @@ dialog p{margin:0 0 16px;font-size:14.5px;line-height:1.8}
     <button type="button" class="tab" role="tab" id="tabMonth" aria-controls="viewMonth" aria-selected="true">月ごと</button>
     <button type="button" class="tab" role="tab" id="tabYear" aria-controls="viewYear" aria-selected="false">年間まとめ</button>
   </nav>
+
+  <div class="note viewer-note" id="viewerNote" hidden>
+    <p id="viewerText"></p>
+    <div class="actions"><button type="button" class="btn" id="leaveViewer">自分の帳簿をひらく</button></div>
+  </div>
 
   <div class="note" id="sampleNote" hidden>
     <p id="sampleText">いま入っている数字は入力例です。</p>
@@ -309,17 +326,35 @@ dialog p{margin:0 0 16px;font-size:14.5px;line-height:1.8}
     </div>
   </div>
 
+  <section class="card share owner-only" aria-label="家計を見てもらう">
+    <h2>家計を見てもらう</h2>
+    <p class="small">いまの入力内容を、見るだけの画面で開けるリンクにします。できたリンクをLINEなどで送ってください。リンクは何度でも開けますが、中身はリンクを作ったときのままです。あとから入力した分を見てもらうときは、もう一度作って送ってください。</p>
+    <label class="field-l" for="ownerName">あなたの名前（相手の画面に表示されます・なくても大丈夫です）</label>
+    <input class="text" id="ownerName" type="text" maxlength="20" placeholder="例：山田" autocomplete="off">
+    <button type="button" class="btn primary" id="makeLink">確認用のリンクを作る</button>
+    <div class="col" id="linkBox" hidden>
+      <label class="sr-only" for="linkText">できたリンク</label>
+      <textarea class="link-text" id="linkText" rows="3" readonly></textarea>
+      <div class="actions">
+        <button type="button" class="btn primary" id="shareLink">送る</button>
+        <button type="button" class="btn outline" id="copyLink">コピーする</button>
+      </div>
+      <p class="small" id="linkMeta"></p>
+      <p class="small warn">リンクを知っている人は誰でも中身を見られます。送る相手をまちがえないようにしてください。</p>
+    </div>
+  </section>
+
   <section class="card tools" aria-label="保存と書き出し">
     <h2>保存と書き出し</h2>
-    <p class="small">入力した内容は、いま使っているこのブラウザの中にだけ保存されます。ほかの人には見えません。別のスマホやパソコンでは表示されないので、ときどき「バックアップを書き出す」でファイルに残しておいてください。</p>
+    <p class="small owner-only">入力した内容は、いま使っているこのブラウザの中にだけ保存されます。ほかの人には見えません。別のスマホやパソコンでは表示されないので、ときどき「バックアップを書き出す」でファイルに残しておいてください。</p>
     <div class="actions">
       <div class="actions">
         <button type="button" class="btn outline" id="exportCsv">CSVで書き出す（Excel用）</button>
-        <button type="button" class="btn outline" id="exportJson">バックアップを書き出す</button>
-        <button type="button" class="btn outline" id="importBtn">バックアップを読み込む</button>
+        <button type="button" class="btn outline owner-only" id="exportJson">バックアップを書き出す</button>
+        <button type="button" class="btn outline owner-only" id="importBtn">バックアップを読み込む</button>
         <input type="file" id="importFile" accept=".json,application/json" hidden>
       </div>
-      <button type="button" class="btn quiet" id="resetAll">すべて消す</button>
+      <button type="button" class="btn quiet owner-only" id="resetAll">すべて消す</button>
     </div>
   </section>
 </div>
@@ -366,6 +401,65 @@ const mlabel = (k) => { const p = parseKey(k); return p.y + '年' + p.m + '月';
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CUR_KEY = mkey(CUR);
 const BOM = String.fromCharCode(0xFEFF);
+const SITE_URL = 'https://yyyharaken-lgtm.github.io/cashflow-book/';
+const NAME_KEY = 'kakei-owner-name';
+let readOnly = false;
+
+/* ---------- share link (data lives only in the URL fragment, never sent to the server) ---------- */
+function toB64url(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function fromB64url(str) {
+  const b = str.replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(b + '==='.slice((b.length + 3) % 4));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+async function pipeBytes(bytes, transform) {
+  const stream = new Blob([bytes]).stream().pipeThrough(transform);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function encodeShare(name) {
+  const months = {};
+  Object.keys(data.months).filter(hasData).sort().forEach((k) => {
+    const mo = data.months[k];
+    months[k] = [mo.income.filter(filled).map((r) => [r.name, r.amount]), mo.expense.filter(filled).map((r) => [r.name, r.amount])];
+  });
+  const raw = new TextEncoder().encode(JSON.stringify({ v: 1, n: name, t: Date.now(), m: months }));
+  if (typeof CompressionStream === 'function') {
+    try { return 'z' + toB64url(await pipeBytes(raw, new CompressionStream('deflate-raw'))); } catch (e) { /* fall back to uncompressed */ }
+  }
+  return 'j' + toB64url(raw);
+}
+async function decodeShare(payload) {
+  const kind = payload.charAt(0);
+  let bytes = fromB64url(payload.slice(1));
+  if (kind === 'z') {
+    if (typeof DecompressionStream !== 'function') throw new Error('unsupported');
+    bytes = await pipeBytes(bytes, new DecompressionStream('deflate-raw'));
+  } else if (kind !== 'j') {
+    throw new Error('unknown');
+  }
+  const obj = JSON.parse(new TextDecoder().decode(bytes));
+  if (!obj || obj.v !== 1 || !obj.m || typeof obj.m !== 'object') throw new Error('bad');
+  const months = {};
+  for (const k of Object.keys(obj.m)) {
+    const pair = obj.m[k];
+    if (!Array.isArray(pair)) continue;
+    const rows = (a) => Array.isArray(a) ? a.filter(Array.isArray).map(([name, amount]) => ({ name, amount })) : [];
+    months[k] = { income: rows(pair[0]), expense: rows(pair[1]) };
+  }
+  const d = normalize({ isSample: false, months });
+  if (!d) throw new Error('bad');
+  return { data: d, name: typeof obj.n === 'string' ? obj.n.slice(0, 20) : '', t: Number.isFinite(obj.t) ? obj.t : null };
+}
+function fmtDateTime(ms) {
+  const d = new Date(ms);
+  return d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
 
 function fmt(n) {
   if (n === null || n === undefined || Number.isNaN(n)) return '';
@@ -498,9 +592,11 @@ function setStatus(state) {
     loaded: '保存済み',
     sample: '入力例を表示中',
     nostore: 'この画面では保存できません',
+    viewer: '見るだけの画面',
   }[state];
 }
 function persist() {
+  if (readOnly) return;
   if (!storageOk) { setStatus('nostore'); return; }
   const snapshot = { isSample: data.isSample, months: {} };
   for (const k of Object.keys(data.months)) if (hasData(k)) snapshot.months[k] = data.months[k];
@@ -510,6 +606,7 @@ function persist() {
 }
 let saveTimer = 0;
 function scheduleSave() {
+  if (readOnly) return;
   if (!storageOk) { setStatus('nostore'); return; }
   setStatus('saving');
   clearTimeout(saveTimer);
@@ -594,8 +691,8 @@ function renderLists() {
       rows.forEach((r) => {
         h += '<li class="entry" data-type="' + type + '" data-id="' + r.id + '">'
           + '<i class="dot ' + t.dot + '"></i>'
-          + '<input class="name" type="text" maxlength="60" list="' + t.suggest + '" value="' + esc(r.name) + '" placeholder="' + t.ph + '" aria-label="' + t.label + 'の項目名">'
-          + '<span class="amt-wrap"><input class="amt" type="text" inputmode="numeric" autocomplete="off" value="' + esc(fmt(r.amount)) + '" placeholder="0" aria-label="' + t.label + 'の金額"></span>'
+          + '<input class="name" type="text" maxlength="60" list="' + t.suggest + '" value="' + esc(r.name) + '" placeholder="' + t.ph + '" aria-label="' + t.label + 'の項目名"' + (readOnly ? ' readonly tabindex="-1"' : '') + '>'
+          + '<span class="amt-wrap"><input class="amt" type="text" inputmode="numeric" autocomplete="off" value="' + esc(fmt(r.amount)) + '" placeholder="0" aria-label="' + t.label + 'の金額"' + (readOnly ? ' readonly tabindex="-1"' : '') + '></span>'
           + '<button type="button" class="del" data-act="del" aria-label="この項目を削除" title="削除">×</button>'
           + '</li>';
       });
@@ -636,7 +733,7 @@ lists.addEventListener('input', (e) => {
 });
 lists.addEventListener('focusin', (e) => {
   const t = e.target;
-  if (!t.classList.contains('amt')) return;
+  if (readOnly || !t.classList.contains('amt')) return;
   const { row } = entryOf(t.closest('.entry'));
   if (!row) return;
   t.value = row.amount === null ? '' : String(row.amount);
@@ -746,7 +843,7 @@ function renderComputed() {
 }
 function renderNotes() {
   const sn = $('sampleNote');
-  sn.hidden = !data.isSample;
+  sn.hidden = readOnly || !data.isSample;
   if (data.isSample) {
     const keys = Object.keys(data.months).filter(hasData).sort();
     const range = keys.length > 1 ? mlabel(keys[0]) + '〜' + mlabel(keys[keys.length - 1]) : keys.length ? mlabel(keys[0]) : '';
@@ -757,12 +854,12 @@ function renderNotes() {
     for (let n = 1; n <= 36; n++) { const k = shiftKey(selected, -n); if (hasData(k)) { src = k; break; } }
   }
   const cn = $('copyNote');
-  cn.hidden = !src;
+  cn.hidden = readOnly || !src;
   if (src) {
     $('copyText').textContent = mlabel(selected) + 'はまだ入力がありません。' + mlabel(src) + 'の項目と金額をコピーして、変わったところだけ直すこともできます。';
     $('copyPrev').dataset.src = src;
   }
-  $('thisRow').hidden = selected === CUR_KEY;
+  $('thisRow').hidden = readOnly || selected === CUR_KEY;
 }
 function renderAll() {
   renderOptions();
@@ -1002,9 +1099,76 @@ $('resetAll').addEventListener('click', async () => {
   toast('すべて消しました');
 });
 
+/* ---------- share UI ---------- */
+const nameEl = $('ownerName');
+try { nameEl.value = localStorage.getItem(NAME_KEY) || ''; } catch (e) { /* storage unavailable */ }
+nameEl.addEventListener('input', () => {
+  try { localStorage.setItem(NAME_KEY, nameEl.value); } catch (e) { /* storage unavailable */ }
+  $('linkBox').hidden = true;
+});
+$('makeLink').addEventListener('click', async () => {
+  const keys = Object.keys(data.months).filter(hasData).sort();
+  if (!keys.length) { toast('まだ入力がありません'); return; }
+  if (data.isSample && !(await ask('いまは入力例の数字が入っています。このままリンクを作りますか？', '作る'))) return;
+  let payload;
+  try { payload = await encodeShare(nameEl.value.trim().slice(0, 20)); }
+  catch (e) { toast('リンクを作れませんでした。もう一度押してください'); return; }
+  const base = location.hostname === 'yyyharaken-lgtm.github.io' ? location.origin + location.pathname : SITE_URL;
+  const url = base + '#view=' + payload;
+  $('linkText').value = url;
+  const range = keys.length > 1 ? mlabel(keys[0]) + '〜' + mlabel(keys[keys.length - 1]) : mlabel(keys[0]);
+  $('linkMeta').textContent = range + 'の' + keys.length + 'か月分が入っています（リンクの長さ ' + url.length.toLocaleString('ja-JP') + '文字）。' + (url.length > 8000 ? 'リンクがとても長いので、送れないことがあります。' : '');
+  $('shareLink').hidden = typeof navigator.share !== 'function';
+  $('linkBox').hidden = false;
+  toast('リンクができました');
+});
+$('copyLink').addEventListener('click', async () => {
+  const ta = $('linkText');
+  try { await navigator.clipboard.writeText(ta.value); toast('リンクをコピーしました'); return; } catch (e) { /* try the fallback */ }
+  ta.focus();
+  ta.select();
+  try { if (document.execCommand('copy')) { toast('リンクをコピーしました'); return; } } catch (e) { /* fall through */ }
+  toast('コピーできませんでした。リンクを長押ししてコピーしてください');
+});
+$('shareLink').addEventListener('click', async () => {
+  try {
+    await navigator.share({ title: 'キャッシュフロー帳', text: '家計の内容です。リンクを開くと見られます。', url: $('linkText').value });
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    toast('送る画面を開けませんでした。「コピーする」を使ってください');
+  }
+});
+$('leaveViewer').addEventListener('click', () => {
+  history.replaceState(null, '', location.pathname + location.search);
+  location.reload();
+});
+window.addEventListener('hashchange', () => location.reload());
+
 /* ---------- start ---------- */
-renderAll();
-setStatus(!storageOk ? 'nostore' : loaded ? 'loaded' : 'sample');
+async function start() {
+  const m = location.hash.match(/^#view=([A-Za-z0-9_-]+)$/);
+  if (m) {
+    try {
+      const shared = await decodeShare(m[1]);
+      readOnly = true;
+      data = shared.data;
+      const keys = Object.keys(data.months).filter(hasData).sort();
+      if (keys.length) selected = keys[keys.length - 1];
+      document.body.classList.add('readonly');
+      const who = shared.name ? shared.name.replace(/さん$/, '') + 'さん' : '送ってくれた人';
+      $('viewerText').textContent = who + 'の家計です' + (shared.t ? '（' + fmtDateTime(shared.t) + '時点の内容）' : '') + '。見るだけの画面なので、ここでは数字を変えられません。';
+      document.title = who + 'の家計｜キャッシュフロー帳';
+    } catch (err) {
+      $('viewerText').textContent = (err && err.message === 'unsupported')
+        ? 'このブラウザではリンクを開けませんでした。スマホやブラウザを最新にしてから開いてください。下に出ているのは、このブラウザに保存されている帳簿です。'
+        : 'このリンクは開けませんでした。リンクが途中で切れていないか、送ってくれた人に確認してください。下に出ているのは、このブラウザに保存されている帳簿です。';
+    }
+    $('viewerNote').hidden = false;
+  }
+  renderAll();
+  setStatus(readOnly ? 'viewer' : !storageOk ? 'nostore' : loaded ? 'loaded' : 'sample');
+}
+start();
 })();
 </script>
 
