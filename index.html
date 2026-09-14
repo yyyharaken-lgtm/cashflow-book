@@ -640,11 +640,21 @@ lists.addEventListener('focusin', (e) => {
   const { row } = entryOf(t.closest('.entry'));
   if (!row) return;
   t.value = row.amount === null ? '' : String(row.amount);
+  t.dataset.justFocused = '1';
+  t.select();
   requestAnimationFrame(() => { if (document.activeElement === t) t.select(); });
+});
+// Keep the whole amount selected after a tap/click, so typing replaces it instead of inserting mid-number.
+lists.addEventListener('mouseup', (e) => {
+  const t = e.target;
+  if (!t.classList || !t.classList.contains('amt') || !t.dataset.justFocused) return;
+  e.preventDefault();
+  delete t.dataset.justFocused;
 });
 lists.addEventListener('focusout', (e) => {
   const t = e.target;
   if (!t.classList.contains('amt')) return;
+  delete t.dataset.justFocused;
   const li = t.closest('.entry');
   if (!li || !li.isConnected) return;
   const { row } = entryOf(li);
